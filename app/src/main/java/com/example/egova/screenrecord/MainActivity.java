@@ -6,25 +6,44 @@ import android.content.ComponentName;
 import android.content.Intent;
 import android.content.ServiceConnection;
 import android.content.pm.PackageManager;
+import android.graphics.Bitmap;
 import android.media.projection.MediaProjection;
 import android.media.projection.MediaProjectionManager;
+import android.net.Uri;
+import android.os.AsyncTask;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.IBinder;
 import android.support.v4.app.ActivityCompat;
 import android.support.v4.content.ContextCompat;
 import android.util.DisplayMetrics;
 import android.view.View;
 import android.widget.Button;
+import android.widget.TextView;
+import android.widget.Toast;
+
+import java.util.ArrayList;
+import java.util.List;
 
 public class MainActivity extends Activity {
+
     private static final int RECORD_REQUEST_CODE  = 101;
     private static final int STORAGE_REQUEST_CODE = 102;
     private static final int AUDIO_REQUEST_CODE   = 103;
+    private static final int REQUEST_SELECT_VIDEO = 104;
+
 
     private MediaProjectionManager projectionManager;
     private MediaProjection mediaProjection;
     private RecordService recordService;
+
     private Button startBtn;
+    private TextView selectVideo;
+    private TextView tip;
+
+    private String filePath;
+    private enum State {INIT, READY, BUILDING, COMPLETE}
+    private State state = State.INIT;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -47,6 +66,11 @@ public class MainActivity extends Activity {
             }
         });
 
+        selectVideo = (TextView)findViewById(R.id.select_video);
+        selectVideo.setOnClickListener(clickListener);
+
+        tip = (TextView)findViewById(R.id.tip);
+
         if (ContextCompat.checkSelfPermission(MainActivity.this, Manifest.permission.WRITE_EXTERNAL_STORAGE)
                 != PackageManager.PERMISSION_GRANTED) {
             ActivityCompat.requestPermissions(this,
@@ -63,6 +87,62 @@ public class MainActivity extends Activity {
         bindService(intent, connection, BIND_AUTO_CREATE);
     }
 
+    private View.OnClickListener clickListener = new View.OnClickListener(){
+
+        @Override
+        public void onClick(View view) {
+            if(state == State.INIT || state == State.COMPLETE){
+                Intent intent = new Intent();
+                intent.setType("video/*");
+                intent.setAction(Intent.ACTION_GET_CONTENT);
+                startActivityForResult(Intent.createChooser(intent, "Select Video"), REQUEST_SELECT_VIDEO);
+            }else if(state == State.READY){
+                new AsyncTask<Void, Void, Void>(){
+
+                    @Override
+                    protected void onPreExecute(){
+                        state = State.BUILDING;
+                        tip.setText(R.string.building_gif);
+                    }
+
+                    @Override
+                    protected Void doInBackground(Void... voids) {
+
+                        List<Bitmap> bitmaps = new ArrayList<Bitmap>();
+
+                        try {
+                            BitmapExtractor extractor = new BitmapExtractor();
+                            extractor.setFPS(4);
+                            extractor.setScope(0, 5);
+                            extractor.setSize(540, 960);
+                            bitmaps = extractor.createBitmaps(filePath);
+                        }catch (Exception e){
+                            e.printStackTrace();
+                        }
+                        String fileName = String.valueOf(System.currentTimeMillis()) + ".gif";
+                        String filePath = Environment.getExternalStorageDirectory().getAbsolutePath() + "/" + fileName;
+                        GIFEncoder encoder = new GIFEncoder();
+                        encoder.init(bitmaps.get(0));
+                        encoder.start(filePath);
+                        for (int i = 1; i <bitmaps.size(); i++){
+                            encoder.addFrame(bitmaps.get(i));
+                        }
+                        encoder.finish();
+                        return null;
+                    }
+
+                    @Override
+                    protected void onPostExecute(Void aVoid){
+                        state = State.COMPLETE;
+                        tip.setText(R.string.building_complete);
+                        selectVideo.setText(R.string.select_video);
+                        Toast.makeText(getApplicationContext(), "存储路径" + filePath, Toast.LENGTH_LONG).show();
+                    }
+                }.execute();
+            }
+        }
+    };
+
     @Override
     protected void onDestroy() {
         super.onDestroy();
@@ -77,6 +157,22 @@ public class MainActivity extends Activity {
             recordService.startRecord();
             startBtn.setText(R.string.stop_record);
         }
+
+        if(requestCode == REQUEST_SELECT_VIDEO && resultCode == RESULT_OK){
+            Uri videoUri = data.getData();
+            filePath = getRealFilePath(videoUri);
+            state = State.READY;
+            selectVideo.setText(R.string.create_gif);
+            tip.setText(R.string.building_init);
+        }
+
+    }
+
+    public String getRealFilePath(Uri uri){
+        String path = uri.getPath();
+        String[] pathArray = path.split(":");
+        String fileName = pathArray[pathArray.length - 1];
+        return Environment.getExternalStorageDirectory().getAbsolutePath() + "/" + fileName;
     }
 
     @Override
